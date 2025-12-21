@@ -22,10 +22,27 @@ type TranscriptItem = {
   text: string;
 };
 
+type SupervisorNextResponse = {
+  message: string;
+};
+
 type LogItem = {
   id: number;
   at: string;
   message: string;
+};
+
+const chatAgentInstructions = `You are a realtime voice agent.
+
+- Keep responses short and voice-friendly.
+- For basic greetings and brief chitchat, respond normally.
+- For everything else, you MUST call the tool getNextResponseFromSupervisor to decide what to say.
+- Before calling that tool, say a short filler phrase like: "One moment." or "Let me check.".
+- After you receive tool output, respond with the tool-provided message.
+`;
+
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+  return typeof value === "object" && value !== null;
 };
 
 const clampSpeed = (value: number): number => {
@@ -52,6 +69,8 @@ export function App() {
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
   const logIdRef = useRef<number>(1);
+
+  const transcriptHistoryRef = useRef<TranscriptItem[]>([]);
 
   const webrtcUrl = useMemo(() => {
     return "https://api.openai.com/v1/realtime";
@@ -82,8 +101,30 @@ export function App() {
       JSON.stringify({
         type: "session.update",
         session: {
+          instructions: chatAgentInstructions,
           ...(updates.voice ? { voice: updates.voice } : {}),
           ...(updates.speed ? { speed: updates.speed } : {}),
+          tools: [
+            {
+              type: "function",
+              name: "getNextResponseFromSupervisor",
+              description:
+                "Get the next voice-friendly response from a supervisor model, using transcript context.",
+              parameters: {
+                type: "object",
+                properties: {
+                  relevantContextFromLastUserMessage: {
+                    type: "string",
+                    description:
+                      "Key context from the last user message, if available; may be empty string."
+                  }
+                },
+                required: ["relevantContextFromLastUserMessage"],
+                additionalProperties: false
+              }
+            }
+          ],
+          tool_choice: "auto",
           input_audio_transcription: {
             model: "gpt-4o-mini-transcribe"
           }
@@ -138,6 +179,8 @@ export function App() {
     setEphemeral(null);
     setLiveUserTranscript("");
     setLiveAssistantTranscript("");
+    setTranscriptHistory([]);
+    transcriptHistoryRef.current = [];
   }, [addLog, cleanupConnection]);
 
   useEffect(() => {
@@ -162,6 +205,96 @@ export function App() {
       return merged.length > 50 ? merged.slice(0, 50) : merged;
     });
   }, []);
+
+  useEffect(() => {
+    transcriptHistoryRef.current = transcriptHistory;
+  }, [transcriptHistory]);
+
+  const sendConversationItemCreate = useCallback((payload: unknown) => {
+    const dc = dataChannelRef.current;
+    if (!dc || dc.readyState !== "open") {
+      return;
+    }
+    dc.send(JSON.stringify(payload));
+  }, []);
+
+  const sendResponseCreate = useCallback(() => {
+    const dc = dataChannelRef.current;
+    if (!dc || dc.readyState !== "open") {
+      return;
+    }
+    dc.send(
+      JSON.stringify({
+        type: "response.create"
+      })
+    );
+  }, []);
+
+  const runSupervisorTool = useCallback(
+    async (callId: string, relevantContextFromLastUserMessage: string) => {
+      addLog("Supervisor tool invoked");
+
+      try {
+        const transcriptForServer = transcriptHistoryRef.current
+          .slice()
+          .reverse()
+          .map((item) => ({
+            speaker: item.speaker,
+            text: item.text
+          }));
+
+        const res = await fetch("/api/supervisor/next", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            transcript: transcriptForServer,
+            relevantContextFromLastUserMessage
+          })
+        });
+
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(`Supervisor endpoint returned ${res.status}: ${text.slice(0, 400)}`);
+        }
+
+        const data = (await res.json()) as SupervisorNextResponse;
+        if (!data.message) {
+          throw new Error("Supervisor response missing message");
+        }
+
+        sendConversationItemCreate({
+          type: "conversation.item.create",
+          item: {
+            type: "function_call_output",
+            call_id: callId,
+            output: JSON.stringify({ message: data.message })
+          }
+        });
+
+        addLog("Supervisor tool output sent to session");
+        sendResponseCreate();
+      } catch (e) {
+        const message = e instanceof Error ? e.message : "Unknown error";
+        addLog(`Supervisor tool failed: ${message}`);
+
+        sendConversationItemCreate({
+          type: "conversation.item.create",
+          item: {
+            type: "function_call_output",
+            call_id: callId,
+            output: JSON.stringify({
+              message: "Sorry — I hit an internal error while checking that. Could you try again?"
+            })
+          }
+        });
+
+        sendResponseCreate();
+      }
+    },
+    [addLog, sendConversationItemCreate, sendResponseCreate]
+  );
 
   const handleRealtimeEvent = useCallback(
     (evt: unknown) => {
@@ -255,8 +388,46 @@ export function App() {
       if (type === "error") {
         addLog("Realtime error event received");
       }
+
+      if (type === "response.done") {
+        const responseObj = isRecord(record.response) ? record.response : null;
+        const outputUnknown = responseObj ? responseObj.output : null;
+        const outputArr = Array.isArray(outputUnknown) ? outputUnknown : [];
+
+        for (const outputItem of outputArr) {
+          if (!isRecord(outputItem)) {
+            continue;
+          }
+
+          const outputType = typeof outputItem.type === "string" ? outputItem.type : null;
+          if (outputType !== "function_call") {
+            continue;
+          }
+
+          const name = typeof outputItem.name === "string" ? outputItem.name : null;
+          const callId = typeof outputItem.call_id === "string" ? outputItem.call_id : null;
+          const argsRaw = typeof outputItem.arguments === "string" ? outputItem.arguments : "{}";
+
+          if (name !== "getNextResponseFromSupervisor" || !callId) {
+            continue;
+          }
+
+          let relevantContextFromLastUserMessage = "";
+          try {
+            const parsed = JSON.parse(argsRaw) as unknown;
+            if (isRecord(parsed) && typeof parsed.relevantContextFromLastUserMessage === "string") {
+              relevantContextFromLastUserMessage = parsed.relevantContextFromLastUserMessage;
+            }
+          } catch {
+            // ignore
+          }
+
+          void runSupervisorTool(callId, relevantContextFromLastUserMessage);
+          break;
+        }
+      }
     },
-    [addLog, liveUserTranscript, pushTranscript]
+    [addLog, liveUserTranscript, pushTranscript, runSupervisorTool]
   );
 
   const connect = useCallback(async () => {
@@ -278,7 +449,8 @@ export function App() {
         },
         body: JSON.stringify({
           voice,
-          speed
+          speed,
+          instructions: chatAgentInstructions
         })
       });
 
