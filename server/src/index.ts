@@ -1,6 +1,9 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { env } from "./env.js";
+import { createMcpManager, type McpManager, type ToolPolicy } from "./mcp.js";
 
 type TranscriptItem = {
   speaker: "user" | "assistant";
@@ -15,6 +18,7 @@ type EphemeralSessionRequestBody = {
 };
 
 type SupervisorNextRequestBody = {
+  sessionId?: string | null;
   transcript: TranscriptItem[];
   relevantContextFromLastUserMessage?: string | null;
 };
@@ -23,12 +27,36 @@ type SupervisorNextResponse = {
   message: string;
 };
 
+type PendingToolCall = {
+  toolName: string;
+  args: Record<string, unknown>;
+  policy: ToolPolicy;
+  createdAt: number;
+};
+
 type EphemeralSessionResponse = {
   sessionId: string;
   clientSecret: string;
   expiresAt: number | null;
   model: string;
   voice: string | null;
+};
+
+type OpenAiToolCall = {
+  id: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: string;
+  };
+};
+
+type OpenAiChatMessage = {
+  role: "system" | "user" | "assistant" | "tool";
+  content?: string;
+  tool_calls?: OpenAiToolCall[];
+  tool_call_id?: string;
+  name?: string;
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
@@ -57,6 +85,83 @@ const formatTranscriptForSupervisor = (items: TranscriptItem[]): string => {
     .join("\n");
 };
 
+const getLastUserUtterance = (items: TranscriptItem[]): string => {
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const item = items[i];
+    if (item?.speaker === "user") {
+      return item.text.trim();
+    }
+  }
+  return "";
+};
+
+const looksLikeYes = (text: string): boolean => {
+  const normalized = text.toLowerCase();
+  return /\b(yes|yeah|yep|sure|ok|okay|please do|do it|confirm|proceed|go ahead)\b/.test(
+    normalized
+  );
+};
+
+const looksLikeNo = (text: string): boolean => {
+  const normalized = text.toLowerCase();
+  return /\b(no|nope|nah|stop|cancel|don't|do not)\b/.test(normalized);
+};
+
+const truncate = (value: string, max: number): string => {
+  if (value.length <= max) {
+    return value;
+  }
+  return `${value.slice(0, max)}…`;
+};
+
+const summarizeToolCall = (toolName: string, args: Record<string, unknown>): string => {
+  const argsText = truncate(JSON.stringify(args), 220);
+  return `${toolName}(${argsText})`;
+};
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const repoRoot = path.resolve(__dirname, "..", "..");
+
+let mcpManager: McpManager | null = null;
+const pendingToolCallsBySession = new Map<string, PendingToolCall>();
+
+const startMcpManagerInBackground = async (app: Awaited<ReturnType<typeof buildServer>>) => {
+  if (mcpManager) {
+    return;
+  }
+
+  try {
+    const manager = await createMcpManager(repoRoot);
+    mcpManager = manager;
+
+    const startupErrors = manager.getStartupErrors();
+    if (startupErrors.length > 0) {
+      for (const err of startupErrors) {
+        app.log.warn(
+          {
+            serverName: err.serverName,
+            message: err.message
+          },
+          "MCP server failed to start"
+        );
+      }
+    }
+
+    if (manager.hasTools()) {
+      app.log.info("MCP tools loaded");
+    } else {
+      app.log.warn(
+        "MCP manager started, but no tools were discovered (missing mcp.config.yaml?)"
+      );
+    }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : "Unknown error";
+    app.log.warn(`Failed to start MCP manager: ${message}`);
+    mcpManager = null;
+  }
+};
+
 const buildServer = async () => {
   const app = Fastify({
     logger: true
@@ -71,7 +176,8 @@ const buildServer = async () => {
     return {
       ok: true,
       serverTime: new Date().toISOString(),
-      hasOpenAIKey: env.openaiApiKey.length > 0
+      hasOpenAIKey: env.openaiApiKey.length > 0,
+      hasMcp: Boolean(mcpManager)
     };
   });
 
@@ -156,12 +262,128 @@ const buildServer = async () => {
       });
     }
 
+    const sessionId = typeof req.body.sessionId === "string" ? req.body.sessionId : null;
     const transcript = Array.isArray(req.body.transcript) ? req.body.transcript : [];
     const transcriptText = formatTranscriptForSupervisor(transcript);
     const relevantContext =
       typeof req.body.relevantContextFromLastUserMessage === "string"
         ? req.body.relevantContextFromLastUserMessage
         : "";
+
+    const lastUserUtterance = getLastUserUtterance(transcript);
+
+    if (sessionId && pendingToolCallsBySession.has(sessionId)) {
+      const pending = pendingToolCallsBySession.get(sessionId);
+      if (pending) {
+        if (looksLikeYes(lastUserUtterance)) {
+          pendingToolCallsBySession.delete(sessionId);
+
+          if (!mcpManager) {
+            return reply.send({
+              message:
+                "Okay. I can't run tools right now because MCP is not configured on the server."
+            } satisfies SupervisorNextResponse);
+          }
+
+          try {
+            const toolResult = await mcpManager.callTool(pending.toolName, pending.args);
+            const toolSummary = truncate(JSON.stringify(toolResult.result), 1200);
+
+            const openAiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${env.openaiApiKey}`,
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify({
+                model: "gpt-5-mini",
+                messages: [
+                  {
+                    role: "system",
+                    content: supervisorSystemPrompt
+                  },
+                  {
+                    role: "user",
+                    content: [
+                      "The user confirmed you may execute a tool.",
+                      `Tool executed: ${summarizeToolCall(pending.toolName, pending.args)}`,
+                      `Tool result: ${toolSummary}`,
+                      "",
+                      "Conversation transcript:",
+                      transcriptText || "(empty)",
+                      "",
+                      relevantContext
+                        ? `Relevant context from last user message: ${relevantContext}`
+                        : "",
+                      "",
+                      "Return ONLY the next assistant message (no headers)."
+                    ]
+                      .filter((part) => part.length > 0)
+                      .join("\n")
+                  }
+                ]
+              })
+            });
+
+            if (!openAiResponse.ok) {
+              const text = await openAiResponse.text();
+              req.log.warn(
+                {
+                  status: openAiResponse.status,
+                  body: text.slice(0, 2000)
+                },
+                "OpenAI supervisor response failed"
+              );
+              return reply.status(502).send({
+                error: "OpenAI supervisor response failed",
+                status: openAiResponse.status
+              });
+            }
+
+            const data: unknown = await openAiResponse.json();
+            if (!isRecord(data)) {
+              return reply.status(502).send({
+                error: "OpenAI response was not an object"
+              });
+            }
+
+            const choices = Array.isArray(data.choices) ? data.choices : [];
+            const firstChoice = choices.length > 0 && isRecord(choices[0]) ? choices[0] : null;
+            const messageObj =
+              firstChoice && isRecord(firstChoice.message) ? firstChoice.message : null;
+            const content =
+              messageObj && typeof messageObj.content === "string" ? messageObj.content : null;
+
+            if (!content) {
+              return reply.status(502).send({
+                error: "OpenAI response missing content"
+              });
+            }
+
+            return reply.send({
+              message: content.trim()
+            } satisfies SupervisorNextResponse);
+          } catch (e) {
+            const message = e instanceof Error ? e.message : "Unknown error";
+            req.log.warn({ message }, "Pending tool execution failed");
+            return reply.send({
+              message: "Sorry — I couldn't run that tool."
+            } satisfies SupervisorNextResponse);
+          }
+        }
+
+        if (looksLikeNo(lastUserUtterance)) {
+          pendingToolCallsBySession.delete(sessionId);
+          return reply.send({
+            message: "Okay, I won't run that. What would you like to do instead?"
+          } satisfies SupervisorNextResponse);
+        }
+
+        return reply.send({
+          message: `I can run ${summarizeToolCall(pending.toolName, pending.args)}. Should I proceed?`
+        } satisfies SupervisorNextResponse);
+      }
+    }
 
     const userPromptParts = [
       "Conversation transcript:",
@@ -172,67 +394,180 @@ const buildServer = async () => {
       "Return ONLY the next assistant message (no headers)."
     ].filter((part): part is string => typeof part === "string" && part.length > 0);
 
-    const openAiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${env.openaiApiKey}`,
-        "Content-Type": "application/json"
+    const tools = mcpManager ? mcpManager.getOpenAiTools() : [];
+    const maxIterations = 3;
+
+    const baseMessages: OpenAiChatMessage[] = [
+      {
+        role: "system",
+        content: supervisorSystemPrompt
       },
-      body: JSON.stringify({
-        model: "gpt-5-mini",
-        messages: [
-          {
-            role: "system",
-            content: supervisorSystemPrompt
-          },
-          {
-            role: "user",
-            content: userPromptParts.join("\n")
-          }
-        ],
-        temperature: 1
-      })
-    });
+      {
+        role: "user",
+        content: userPromptParts.join("\n")
+      }
+    ];
 
-    if (!openAiResponse.ok) {
-      const text = await openAiResponse.text();
-      req.log.warn(
-        {
-          status: openAiResponse.status,
-          body: text.slice(0, 2000)
+    const messages = [...baseMessages];
+
+    for (let iteration = 0; iteration < maxIterations; iteration += 1) {
+      const openAiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.openaiApiKey}`,
+          "Content-Type": "application/json"
         },
-        "OpenAI supervisor response failed"
-      );
-      return reply.status(502).send({
-        error: "OpenAI supervisor response failed",
-        status: openAiResponse.status
+        body: JSON.stringify({
+          model: "gpt-5-mini",
+          messages,
+          ...(tools.length > 0
+            ? {
+                tools,
+                tool_choice: "auto"
+              }
+            : {})
+        })
+      });
+
+      if (!openAiResponse.ok) {
+        const text = await openAiResponse.text();
+        req.log.warn(
+          {
+            status: openAiResponse.status,
+            body: text.slice(0, 2000)
+          },
+          "OpenAI supervisor response failed"
+        );
+        return reply.status(502).send({
+          error: "OpenAI supervisor response failed",
+          status: openAiResponse.status
+        });
+      }
+
+      const data: unknown = await openAiResponse.json();
+      if (!isRecord(data)) {
+        return reply.status(502).send({
+          error: "OpenAI response was not an object"
+        });
+      }
+
+      const choices = Array.isArray(data.choices) ? data.choices : [];
+      const firstChoice = choices.length > 0 && isRecord(choices[0]) ? choices[0] : null;
+      const messageObj = firstChoice && isRecord(firstChoice.message) ? firstChoice.message : null;
+      if (!messageObj) {
+        return reply.status(502).send({
+          error: "OpenAI response missing message"
+        });
+      }
+
+      const toolCallsRaw = Array.isArray(messageObj.tool_calls) ? messageObj.tool_calls : [];
+      const toolCalls = toolCallsRaw.filter(isRecord);
+
+      const assistantContent =
+        typeof messageObj.content === "string" && messageObj.content.trim()
+          ? messageObj.content.trim()
+          : null;
+
+      if (toolCalls.length === 0) {
+        if (!assistantContent) {
+          return reply.status(502).send({
+            error: "OpenAI response missing content"
+          });
+        }
+        return reply.send({
+          message: assistantContent
+        } satisfies SupervisorNextResponse);
+      }
+
+      if (!mcpManager) {
+        return reply.send({
+          message: "I need MCP tools for that, but MCP is not configured on the server."
+        } satisfies SupervisorNextResponse);
+      }
+
+      const firstToolCall = toolCalls[0];
+      if (!firstToolCall) {
+        return reply.status(502).send({
+          error: "OpenAI tool call missing"
+        });
+      }
+
+      const toolCallId = typeof firstToolCall.id === "string" ? firstToolCall.id : null;
+      const functionObj = isRecord(firstToolCall.function) ? firstToolCall.function : null;
+      const toolName =
+        functionObj && typeof functionObj.name === "string" ? functionObj.name : null;
+      const argsRaw =
+        functionObj && typeof functionObj.arguments === "string" ? functionObj.arguments : "{}";
+
+      if (!toolCallId || !toolName) {
+        return reply.status(502).send({
+          error: "OpenAI tool call missing name/id"
+        });
+      }
+
+      let args: Record<string, unknown> = {};
+      try {
+        const parsed = JSON.parse(argsRaw) as unknown;
+        if (isRecord(parsed)) {
+          args = parsed;
+        }
+      } catch {
+        // ignore
+      }
+
+      const policy = mcpManager.getToolPolicy(toolName);
+      if (!policy) {
+        return reply.send({
+          message: `I don't recognize tool ${toolName}.`
+        } satisfies SupervisorNextResponse);
+      }
+
+      if (policy.requiresConfirmation) {
+        if (!sessionId) {
+          return reply.send({
+            message:
+              "I need an active session id to request confirmation for that action. Please reconnect."
+          } satisfies SupervisorNextResponse);
+        }
+
+        pendingToolCallsBySession.set(sessionId, {
+          toolName,
+          args,
+          policy,
+          createdAt: Date.now()
+        });
+
+        return reply.send({
+          message: `I can run ${summarizeToolCall(toolName, args)}. Should I proceed?`
+        } satisfies SupervisorNextResponse);
+      }
+
+      const toolResult = await mcpManager.callTool(toolName, args);
+
+      messages.push({
+        role: "assistant",
+        content: assistantContent ?? "",
+        tool_calls: [
+          {
+            id: toolCallId,
+            type: "function",
+            function: {
+              name: toolName,
+              arguments: argsRaw
+            }
+          }
+        ]
+      });
+      messages.push({
+        role: "tool",
+        tool_call_id: toolCallId,
+        content: JSON.stringify(toolResult.result)
       });
     }
 
-    const data: unknown = await openAiResponse.json();
-    if (!isRecord(data)) {
-      return reply.status(502).send({
-        error: "OpenAI response was not an object"
-      });
-    }
-
-    const choices = Array.isArray(data.choices) ? data.choices : [];
-    const firstChoice = choices.length > 0 && isRecord(choices[0]) ? choices[0] : null;
-    const messageObj = firstChoice && isRecord(firstChoice.message) ? firstChoice.message : null;
-    const content =
-      messageObj && typeof messageObj.content === "string" ? messageObj.content : null;
-
-    if (!content) {
-      return reply.status(502).send({
-        error: "OpenAI response missing content"
-      });
-    }
-
-    const response: SupervisorNextResponse = {
-      message: content.trim()
-    };
-
-    return reply.send(response);
+    return reply.send({
+      message: "I couldn't complete that request with tools."
+    } satisfies SupervisorNextResponse);
   });
 
   return app;
@@ -246,6 +581,8 @@ const main = async () => {
       host: "0.0.0.0",
       port: env.serverPort
     });
+
+    void startMcpManagerInBackground(app);
   } catch (err) {
     app.log.error(err);
     process.exitCode = 1;

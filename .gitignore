@@ -11,3 +11,5 @@ client/dist/
 playwright-report/
 test-results/
 server/dist/
+
+mcp.config.yaml
