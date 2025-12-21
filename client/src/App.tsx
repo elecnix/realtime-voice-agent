@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 type HealthResponse = {
   ok: boolean;
@@ -48,6 +50,10 @@ const isRecord = (value: unknown): value is Record<string, unknown> => {
 
 const clampSpeed = (value: number): number => {
   return Math.min(1.5, Math.max(0.25, value));
+};
+
+const normalizeTranscriptText = (text: string): string => {
+  return text.replace(/\\r\\n/g, "\n").replace(/\\n/g, "\n").replace(/\\r/g, "\n");
 };
 
 export function App() {
@@ -193,7 +199,7 @@ export function App() {
   }, [cleanupConnection]);
 
   const pushTranscript = useCallback((speaker: "user" | "assistant", text: string) => {
-    const trimmed = text.trim();
+    const trimmed = normalizeTranscriptText(text).trim();
     if (!trimmed) {
       return;
     }
@@ -373,9 +379,15 @@ export function App() {
           window.clearTimeout(pendingAssistantCommitTimerRef.current);
           pendingAssistantCommitTimerRef.current = null;
         }
+        const partialText = pendingAssistantTranscriptRef.current.trim();
         pendingAssistantTranscriptRef.current = "";
         setLiveAssistantTranscript("");
-        addLog("Assistant audio cleared; transcript reset");
+        if (partialText) {
+          pushTranscript("assistant", partialText);
+          addLog("Assistant audio cleared; committed partial transcript");
+        } else {
+          addLog("Assistant audio cleared; transcript reset");
+        }
         return;
       }
 
@@ -741,10 +753,16 @@ export function App() {
         <h2>Transcript</h2>
         <div className="transcripts">
           <div className="transcriptLine">
-            <strong>You (live):</strong> {liveUserTranscript || "(listening...)"}
+            <strong>You (live):</strong>{" "}
+            {normalizeTranscriptText(liveUserTranscript) || "(listening...)"}
           </div>
           <div className="transcriptLine">
-            <strong>Assistant (live):</strong> {liveAssistantTranscript || "(speaking...)"}
+            <strong>Assistant (live):</strong>{" "}
+            <span className="liveMarkdown">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {normalizeTranscriptText(liveAssistantTranscript) || "(speaking...)"}
+              </ReactMarkdown>
+            </span>
           </div>
         </div>
 
@@ -753,7 +771,9 @@ export function App() {
           {transcriptHistory.map((item) => (
             <div key={item.id} className={`bubble ${item.speaker}`}>
               <div className="bubbleHeader">{item.speaker === "user" ? "You" : "Assistant"}</div>
-              <div className="bubbleText">{item.text}</div>
+              <div className="bubbleText">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.text}</ReactMarkdown>
+              </div>
             </div>
           ))}
         </div>

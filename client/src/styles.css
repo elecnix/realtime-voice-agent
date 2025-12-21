@@ -132,12 +132,12 @@ select:disabled {
 .history {
   margin-top: 12px;
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .bubble {
   border-radius: 12px;
-  padding: 10px 12px;
+  padding: 6px 10px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   background: rgba(255, 255, 255, 0.04);
 }
@@ -155,7 +155,7 @@ select:disabled {
 .bubbleHeader {
   font-size: 12px;
   color: rgba(232, 236, 248, 0.7);
-  margin-bottom: 4px;
+  margin-bottom: 2px;
 }
 
 .bubbleText {
