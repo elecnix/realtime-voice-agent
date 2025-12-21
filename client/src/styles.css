@@ -61,3 +61,126 @@ dd {
 .error {
   color: #ffb4b4;
 }
+
+.controls {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+  min-width: 220px;
+}
+
+.field span {
+  color: rgba(232, 236, 248, 0.7);
+  font-size: 14px;
+}
+
+select {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: inherit;
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
+select option,
+select optgroup {
+  background-color: #0b1020;
+  color: #e8ecf8;
+}
+
+.buttons {
+  display: flex;
+  gap: 10px;
+}
+
+.button {
+  background: rgba(123, 176, 255, 0.2);
+  border: 1px solid rgba(123, 176, 255, 0.35);
+  color: inherit;
+  border-radius: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+
+.button.secondary {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+}
+
+.button:disabled,
+select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.transcripts {
+  display: grid;
+  gap: 8px;
+}
+
+.transcriptLine {
+  color: rgba(232, 236, 248, 0.85);
+}
+
+.history {
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.bubble {
+  border-radius: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.bubble.user {
+  background: rgba(123, 176, 255, 0.12);
+  border-color: rgba(123, 176, 255, 0.25);
+}
+
+.bubble.assistant {
+  background: rgba(120, 255, 203, 0.08);
+  border-color: rgba(120, 255, 203, 0.22);
+}
+
+.bubbleHeader {
+  font-size: 12px;
+  color: rgba(232, 236, 248, 0.7);
+  margin-bottom: 4px;
+}
+
+.bubbleText {
+  white-space: pre-wrap;
+}
+
+.log {
+  display: grid;
+  gap: 6px;
+}
+
+.logRow {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.logAt {
+  color: rgba(232, 236, 248, 0.6);
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+}
+
+.logMsg {
+  color: rgba(232, 236, 248, 0.9);
+}

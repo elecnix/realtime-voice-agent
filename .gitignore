@@ -10,3 +10,4 @@ coverage
 client/dist/
 playwright-report/
 test-results/
+server/dist/
