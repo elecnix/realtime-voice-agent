@@ -80,9 +80,7 @@ const encodeMcpMessage = (payload: unknown): Buffer => {
   return Buffer.from(`${JSON.stringify(payload)}\n`, "utf8");
 };
 
-const parseMcpOutputBuffer = (
-  buffer: Buffer
-): { messages: JsonRpcResponse[]; rest: Buffer } => {
+const parseMcpOutputBuffer = (buffer: Buffer): { messages: JsonRpcResponse[]; rest: Buffer } => {
   const messages: JsonRpcResponse[] = [];
   let rest = buffer;
 
@@ -124,7 +122,7 @@ const parseMcpOutputBuffer = (
 
       try {
         const parsed: unknown = JSON.parse(bodyText);
-        if (isRecord(parsed) && parsed.jsonrpc === "2.0" && ("id" in parsed)) {
+        if (isRecord(parsed) && parsed.jsonrpc === "2.0" && "id" in parsed) {
           messages.push(parsed as JsonRpcResponse);
         }
       } catch {
@@ -148,7 +146,7 @@ const parseMcpOutputBuffer = (
       }
       try {
         const parsed: unknown = JSON.parse(trimmed);
-        if (isRecord(parsed) && parsed.jsonrpc === "2.0" && ("id" in parsed)) {
+        if (isRecord(parsed) && parsed.jsonrpc === "2.0" && "id" in parsed) {
           messages.push(parsed as JsonRpcResponse);
         }
       } catch {
@@ -206,11 +204,7 @@ class McpStdioClient {
 
       for (const msg of messages) {
         const id =
-          typeof msg.id === "number"
-            ? msg.id
-            : typeof msg.id === "string"
-              ? Number(msg.id)
-              : null;
+          typeof msg.id === "number" ? msg.id : typeof msg.id === "string" ? Number(msg.id) : null;
 
         if (!Number.isFinite(id ?? NaN)) {
           continue;
@@ -604,9 +598,7 @@ export class McpManager {
         ? this.configPath
         : path.join(this.repoRoot, "mcp.config.example.yaml");
 
-      const raw = await fs
-        .readFile(fullPath, "utf8")
-        .catch(() => fs.readFile(examplePath, "utf8"));
+      const raw = await fs.readFile(fullPath, "utf8").catch(() => fs.readFile(examplePath, "utf8"));
       const parsed = parseYaml(raw);
       return isRecord(parsed) ? (parsed as McpConfig) : {};
     } catch {

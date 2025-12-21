@@ -151,9 +151,7 @@ const startMcpManagerInBackground = async (app: Awaited<ReturnType<typeof buildS
     if (manager.hasTools()) {
       app.log.info("MCP tools loaded");
     } else {
-      app.log.warn(
-        "MCP manager started, but no tools were discovered (missing mcp.config.yaml?)"
-      );
+      app.log.warn("MCP manager started, but no tools were discovered (missing mcp.config.yaml?)");
     }
   } catch (e) {
     const message = e instanceof Error ? e.message : "Unknown error";
