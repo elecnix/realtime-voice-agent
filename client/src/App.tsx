@@ -4,6 +4,7 @@ type HealthResponse = {
   ok: boolean;
   serverTime: string;
   hasOpenAIKey: boolean;
+  hasMcp?: boolean;
 };
 
 type RealtimeEphemeralResponse = {
@@ -35,8 +36,8 @@ type LogItem = {
 const chatAgentInstructions = `You are a realtime voice agent.
 
 - Keep responses short and voice-friendly.
-- For basic greetings and brief chitchat, respond normally.
-- For everything else, you MUST call the tool getNextResponseFromSupervisor to decide what to say.
+- You may handle ONLY basic greetings and brief thanks without escalation.
+- For everything else (including yes/no replies, confirmations, or any request that might require tools), you MUST call the tool getNextResponseFromSupervisor to decide what to say.
 - Before calling that tool, say a short filler phrase like: "One moment." or "Let me check.".
 - After you receive tool output, respond with the tool-provided message.
 `;
@@ -71,6 +72,7 @@ export function App() {
   const logIdRef = useRef<number>(1);
 
   const transcriptHistoryRef = useRef<TranscriptItem[]>([]);
+  const sessionIdRef = useRef<string | null>(null);
 
   const webrtcUrl = useMemo(() => {
     return "https://api.openai.com/v1/realtime";
@@ -181,6 +183,7 @@ export function App() {
     setLiveAssistantTranscript("");
     setTranscriptHistory([]);
     transcriptHistoryRef.current = [];
+    sessionIdRef.current = null;
   }, [addLog, cleanupConnection]);
 
   useEffect(() => {
@@ -234,6 +237,8 @@ export function App() {
     async (callId: string, relevantContextFromLastUserMessage: string) => {
       addLog("Supervisor tool invoked");
 
+      const sessionId = sessionIdRef.current;
+
       try {
         const transcriptForServer = transcriptHistoryRef.current
           .slice()
@@ -249,6 +254,7 @@ export function App() {
             "Content-Type": "application/json"
           },
           body: JSON.stringify({
+            sessionId,
             transcript: transcriptForServer,
             relevantContextFromLastUserMessage
           })
@@ -463,6 +469,7 @@ export function App() {
 
       const session = (await ephemeralRes.json()) as RealtimeEphemeralResponse;
       setEphemeral(session);
+      sessionIdRef.current = session.sessionId;
       addLog(`Ephemeral session created (${session.sessionId})`);
 
       const pc = new RTCPeerConnection();
