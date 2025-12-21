@@ -1,0 +1,21 @@
+{
+  "name": "@realtime-voice-agent/client",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 8642 --strictPort",
+    "build": "vite build",
+    "lint": "eslint .",
+    "test": "echo \"(no tests)\""
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^6.0.7"
+  }
+}

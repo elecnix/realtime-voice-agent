@@ -1,0 +1,15 @@
+node_modules
+dist
+build
+coverage
+*.log
+research
+research/**
+server/dist
+server/dist/**
+client/dist
+client/dist/**
+playwright-report
+playwright-report/**
+test-results
+test-results/**

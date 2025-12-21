@@ -16,6 +16,7 @@
 - Prefer Fastify for the server.
 
 Deliverables:
+
 - `npm run dev` starts server and client.
 - Basic UI skeleton renders.
 
@@ -38,6 +39,7 @@ Goal: prove the core realtime voice pipe works end-to-end before adding orchestr
 - Hook transcript and event callbacks for UI.
 
 Deliverables:
+
 - Connect/disconnect works.
 - Audio roundtrip works.
 - UI shows transcript deltas.
@@ -71,6 +73,7 @@ Decision: use the working pattern from `openai-realtime-agents` where the realti
   - Tool outputs are fed back into the supervisor until a final assistant message is produced.
 
 Deliverables:
+
 - A “requires thinking” query triggers a filler phrase and then a supervisor response.
 - The user hears:
   - an immediate acknowledgment
@@ -90,6 +93,7 @@ Deliverables:
   - Discover tools.
 
 Operational requirements:
+
 - MCP process lifecycle:
   - start on server boot
   - restart on crash (with backoff)
@@ -114,6 +118,7 @@ Operational requirements:
   - Server executes command and returns result.
 
 Deliverables:
+
 - `fetch` tool can be called without confirmation.
 - `shell` tool requires confirmation.
 - Tool execution is logged in UI.
@@ -128,6 +133,7 @@ Deliverables:
 - Document Cloudflare tunnel configuration expectations.
 
 Deliverables:
+
 - Stable reconnect behavior.
 - Clear errors.
 
@@ -141,6 +147,7 @@ Once implementation starts, run after each meaningful change:
 - `npm test` (if configured)
 
 Manual smoke tests:
+
 - Connect from browser, speak, receive audio reply.
 - Trigger supervisor escalation.
 - Trigger fetch tool.

@@ -43,6 +43,7 @@ This project is a browser-based voice agent designed to run on a home Linux mach
 ## 5. Functional requirements
 
 ### 5.1 Browser voice experience
+
 - The UI must allow:
   - Connect/disconnect
   - Microphone permission request and status
@@ -52,12 +53,14 @@ This project is a browser-based voice agent designed to run on a home Linux mach
 - The client must support speech-to-speech (assistant audio output) and optionally show text transcripts.
 
 ### 5.2 Ephemeral credential minting
+
 - The server must expose an endpoint to mint ephemeral credentials:
   - `POST /api/realtime/ephemeral`
 - The server uses the long-lived OpenAI API key to call the OpenAI API to create a Realtime session and returns the ephemeral `client_secret.value` to the browser.
 - The ephemeral secret must have a short TTL (OpenAI-controlled).
 
 ### 5.3 Chat-supervisor orchestration
+
 - The realtime chat agent must:
   - Converse naturally and quickly
   - Ask for clarifications
@@ -70,6 +73,7 @@ This project is a browser-based voice agent designed to run on a home Linux mach
   - Return a concise voice-friendly response
 
 ### 5.4 MCP tool integration
+
 - The server must:
   - Read a local MCP configuration file defining servers and how to run them
   - Spawn MCP servers as child processes
@@ -77,6 +81,7 @@ This project is a browser-based voice agent designed to run on a home Linux mach
   - Provide the tool list to the supervisor model
 
 ### 5.5 Voice confirmation approval
+
 - For tool calls deemed “high impact” (initially: shell commands), the agent must request confirmation.
 - Confirmation must be possible by voice. The system must support:
   - The assistant asking a confirmation question that includes a summary of the proposed action.
@@ -85,6 +90,7 @@ This project is a browser-based voice agent designed to run on a home Linux mach
 - The confirmation policy must be enforced server-side.
 
 ### 5.6 Observability
+
 - The UI should show:
   - Event log (optional but helpful for debugging)
   - Tool execution log (command issued, time, status, output summary)

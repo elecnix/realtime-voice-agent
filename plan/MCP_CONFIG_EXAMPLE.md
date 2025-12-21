@@ -17,5 +17,6 @@ mcp:
 ```
 
 Notes:
+
 - The server will spawn these processes locally.
 - Prefer storing secrets in environment variables rather than in the YAML file.

@@ -6,3 +6,7 @@ coverage
 .env.*
 *.log
 .DS_Store
+.prettierrc.json
+client/dist/
+playwright-report/
+test-results/

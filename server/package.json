@@ -1,0 +1,19 @@
+{
+  "name": "@realtime-voice-agent/server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "SERVER_PORT=8643 CLIENT_PORT=8642 tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint .",
+    "test": "echo \"(no tests)\""
+  },
+  "dependencies": {
+    "@fastify/cors": "^10.0.1",
+    "dotenv": "^16.4.7",
+    "fastify": "^5.2.1"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2"
+  }
+}

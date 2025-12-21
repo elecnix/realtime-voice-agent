@@ -1,0 +1,28 @@
+{
+  "name": "realtime-voice-agent",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "scripts": {
+    "dev": "SERVER_PORT=8643 CLIENT_PORT=8642 concurrently -n server,client -c blue,green \"npm run dev -w @realtime-voice-agent/server\" \"npm run dev -w @realtime-voice-agent/client\"",
+    "build": "npm run -ws build",
+    "lint": "npm run -ws lint",
+    "format": "prettier --write .",
+    "test:e2e": "playwright test",
+    "test": "npm run -ws test --if-present && npm run test:e2e"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.19.0",
+    "@playwright/test": "^1.50.0",
+    "@types/node": "^22.10.1",
+    "concurrently": "^9.1.2",
+    "eslint": "^9.19.0",
+    "globals": "^15.14.0",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.20.0"
+  }
+}
