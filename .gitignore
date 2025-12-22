@@ -11,5 +11,6 @@ client/dist/
 playwright-report/
 test-results/
 server/dist/
-
+.CHANGES
 mcp.config.yaml
+logs/

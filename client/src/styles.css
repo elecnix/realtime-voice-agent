@@ -1,4 +1,20 @@
 :root {
+  --c-bg: 11 16 32;
+  --c-fg: 232 236 248;
+  --c-fg-muted: 232 236 248;
+  --c-border: 232 236 248;
+
+  --c-success: 120 255 203;
+  --c-warning: 255 210 123;
+  --c-danger: 255 120 120;
+  --c-danger-muted: 255 180 180;
+  --c-danger-foreground: 255 210 210;
+
+  --mic-border-width: 2px;
+  --mic-border-width-muted: 3px;
+  --mic-border-width-speaking: 5px;
+  --mic-speaking-shadow: 0 0 0 4px rgb(var(--c-success) / 0.18);
+
   font-family:
     system-ui,
     -apple-system,
@@ -6,8 +22,8 @@
     "Segoe UI",
     sans-serif;
   color-scheme: light;
-  background: #0b1020;
-  color: #e8ecf8;
+  background: rgb(var(--c-bg));
+  color: rgb(var(--c-fg));
 }
 
 body {
@@ -31,37 +47,37 @@ body {
   gap: 12px;
 }
 
-.modelPicker {
-  display: grid;
-  justify-items: center;
-}
-
-.modelPicker .field {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.modelPicker .field span {
-  min-width: 70px;
-}
-
+.modelPicker,
 .speedPicker {
   display: grid;
   justify-items: center;
 }
 
+.modelPicker .field,
 .speedPicker .field {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
 }
 
+.modelPicker .field span,
 .speedPicker .field span {
   min-width: 70px;
 }
 
+.modelPicker select {
+  width: 240px;
+}
+
 .speedPicker input[type="range"] {
+  width: 240px;
+}
+
+.speedPicker .rangeContainer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   width: 240px;
 }
 
@@ -69,7 +85,7 @@ body {
   min-width: 48px;
   text-align: right;
   font-variant-numeric: tabular-nums;
-  color: rgba(232, 236, 248, 0.75);
+  color: rgb(var(--c-fg-muted) / 0.75);
 }
 
 .hero {
@@ -91,13 +107,14 @@ h1 {
   display: grid;
   place-items: center;
   cursor: pointer;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(232, 236, 248, 0.95);
+  border: var(--mic-border-width) solid rgb(var(--c-border) / 0.25);
+  background: rgb(255 255 255 / 0.06);
+  color: rgb(var(--c-fg) / 0.95);
   transition:
     transform 120ms ease,
     background 120ms ease,
     border-color 120ms ease;
+  position: relative;
 }
 
 .micButton:active {
@@ -110,23 +127,51 @@ h1 {
 }
 
 .micButton.state-connected {
-  background: rgba(120, 255, 203, 0.12);
-  border-color: rgba(120, 255, 203, 0.28);
+  background: rgb(var(--c-success) / 0.12);
+  border-color: rgb(var(--c-success) / 0.28);
 }
 
 .micButton.state-connecting {
-  background: rgba(255, 210, 123, 0.12);
-  border-color: rgba(255, 210, 123, 0.28);
+  background: rgb(var(--c-warning) / 0.12);
+  border-color: rgb(var(--c-warning) / 0.28);
 }
 
 .micButton.state-error {
-  background: rgba(255, 120, 120, 0.12);
-  border-color: rgba(255, 120, 120, 0.28);
+  background: rgb(var(--c-danger) / 0.12);
+  border-color: rgb(var(--c-danger) / 0.28);
+}
+
+.micButton.isMuted {
+  background: rgb(var(--c-danger) / 0.1);
+  border-color: rgb(var(--c-danger-muted) / 0.45);
+  color: rgb(var(--c-danger-foreground) / 0.95);
+  border-width: var(--mic-border-width-muted);
+}
+
+.micButton.isSpeaking {
+  background: rgb(var(--c-success) / 0.12);
+  border-color: rgb(var(--c-success) / 0.85);
+  color: rgb(var(--c-success) / 0.98);
+  border-width: var(--mic-border-width-speaking);
+  box-shadow:
+    0 0 0 2px rgb(var(--c-success) / 0.3),
+    0 0 0 6px rgb(255 255 255 / 0.15),
+    0 0 12px 2px rgb(var(--c-success) / 0.4);
 }
 
 .micIcon {
   width: 72px;
   height: 72px;
+}
+
+.micSlash {
+  position: absolute;
+  inset: 0;
+  width: 92px;
+  height: 92px;
+  margin: auto;
+  pointer-events: none;
+  opacity: 0.95;
 }
 
 .micHint {
@@ -139,6 +184,32 @@ h1 {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+}
+
+.waitingLine {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(232, 236, 248, 0.75);
+}
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  border: 2px solid rgba(232, 236, 248, 0.25);
+  border-top-color: rgba(232, 236, 248, 0.85);
+  animation: spin 900ms linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .statusOk {
@@ -304,11 +375,29 @@ select:disabled {
 .bubble.user {
   background: rgba(123, 176, 255, 0.12);
   border-color: rgba(123, 176, 255, 0.25);
+  margin-left: 30px;
 }
 
 .bubble.assistant {
   background: rgba(120, 255, 203, 0.08);
   border-color: rgba(120, 255, 203, 0.22);
+  margin-right: 30px;
+}
+
+.bubble.assistant.live {
+  background: rgba(120, 255, 203, 0.15);
+  border-color: rgba(120, 255, 203, 0.35);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.85;
+  }
 }
 
 .bubbleHeader {

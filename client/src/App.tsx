@@ -38,11 +38,15 @@ type LogItem = {
 const chatAgentInstructions = `You are a realtime voice agent.
 
 - Keep responses short and voice-friendly.
-- You may handle ONLY basic greetings and brief thanks without escalation.
-- If the user says goodbye, you MUST call the tool pauseConversation.
-- For everything else (including yes/no replies, confirmations, or any request that might require tools), you MUST call the tool getNextResponseFromSupervisor to decide what to say.
-- Before calling that tool, say a short filler phrase like: "One moment." or "Let me check.".
-- After you receive tool output, respond with the tool-provided message.
+- You may handle basic greetings and brief thanks without escalation.
+- Pausing is just a cost-saving measure to avoid listening to long silence. The conversation can be resumed multiple times - when the user speaks again, continue the conversation normally.
+- Only consider the most recent messages when deciding whether to pause. If there's been a long silence or the user seems done, you may call pauseConversation to save costs.
+- If the user speaks again after you pause, simply continue the conversation as normal - don't acknowledge the pause unless they mention it.
+- Your supervisor cannot talk to the user directly, but can help you with anything; that gives you infinite capabilities. Always respond positively when the user requests something you don't know yet.
+- Don't mention the existence of the supervisor to the user.
+- Call the supervisor when the user requests information from a knowledge base, productivity tools, or access external services.
+- Before calling the supervisor, say a short filler phrase like: "One moment." or "Let me check.". Getting a response from the supervisor can take a few minutes, so keep the conversation going.
+- After you receive tool output, respond in your own voice, not as the supervisor.
 `;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
@@ -51,6 +55,46 @@ const isRecord = (value: unknown): value is Record<string, unknown> => {
 
 const clampSpeed = (value: number): number => {
   return Math.min(1.5, Math.max(0.25, value));
+};
+
+type LegacyGetUserMedia = (
+  constraints: MediaStreamConstraints,
+  successCallback: (stream: MediaStream) => void,
+  errorCallback: (error: unknown) => void
+) => void;
+
+const getMicrophoneStream = async (): Promise<MediaStream> => {
+  if (navigator.mediaDevices?.getUserMedia) {
+    return await navigator.mediaDevices.getUserMedia({ audio: true });
+  }
+
+  const legacyNavigator = navigator as Navigator & {
+    getUserMedia?: LegacyGetUserMedia;
+    webkitGetUserMedia?: LegacyGetUserMedia;
+    mozGetUserMedia?: LegacyGetUserMedia;
+    msGetUserMedia?: LegacyGetUserMedia;
+  };
+
+  const legacyGetUserMedia: LegacyGetUserMedia | undefined =
+    legacyNavigator.getUserMedia ??
+    legacyNavigator.webkitGetUserMedia ??
+    legacyNavigator.mozGetUserMedia ??
+    legacyNavigator.msGetUserMedia;
+
+  if (legacyGetUserMedia) {
+    return await new Promise<MediaStream>((resolve, reject) => {
+      legacyGetUserMedia.call(
+        navigator,
+        { audio: true },
+        (stream) => resolve(stream),
+        (err) => reject(err instanceof Error ? err : new Error(String(err)))
+      );
+    });
+  }
+
+  throw new Error(
+    "Microphone capture is not available in this browser or context. Try opening the app over HTTPS."
+  );
 };
 
 const normalizeTranscriptText = (text: string): string => {
@@ -67,8 +111,8 @@ const looksLikeGoodbye = (text: string): boolean => {
   );
 };
 
-const SESSION_TIMEOUT_MS = 60_000;
-const SESSION_TIMEOUT_WARNING_MS = 55_000;
+const SESSION_TIMEOUT_MS = 180_000;
+const SESSION_TIMEOUT_WARNING_MS = 170_000;
 
 export function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
@@ -84,6 +128,11 @@ export function App() {
   const [liveAssistantTranscript, setLiveAssistantTranscript] = useState<string>("");
   const [transcriptHistory, setTranscriptHistory] = useState<TranscriptItem[]>([]);
   const [logs, setLogs] = useState<LogItem[]>([]);
+
+  const [isMuted, setIsMuted] = useState<boolean>(false);
+  const [isWaitingForSupervisor, setIsWaitingForSupervisor] = useState<boolean>(false);
+
+  const [isUserSpeaking, setIsUserSpeaking] = useState<boolean>(false);
 
   const [timeoutStatus, setTimeoutStatus] = useState<"none" | "warning" | "expired" | "paused">(
     "none"
@@ -110,6 +159,18 @@ export function App() {
   const pendingAssistantTranscriptRef = useRef<string>("");
   const pendingAssistantCommitTimerRef = useRef<number | null>(null);
 
+  const userSpeakingTimerRef = useRef<number | null>(null);
+
+  const scheduleUserSpeakingOff = useCallback(() => {
+    if (userSpeakingTimerRef.current) {
+      window.clearTimeout(userSpeakingTimerRef.current);
+    }
+    userSpeakingTimerRef.current = window.setTimeout(() => {
+      setIsUserSpeaking(false);
+      userSpeakingTimerRef.current = null;
+    }, 100);
+  }, []);
+
   const addLog = useCallback((message: string) => {
     setLogs((prev) => {
       const next: LogItem = {
@@ -120,6 +181,48 @@ export function App() {
       const merged = [...prev, next];
       return merged.length > 200 ? merged.slice(merged.length - 200) : merged;
     });
+  }, []);
+
+  const playMutedBeep = useCallback(() => {
+    try {
+      const AudioContextCtor =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      const ctx = new AudioContextCtor();
+      const oscillator = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      oscillator.type = "sine";
+      oscillator.frequency.value = 660;
+
+      gain.gain.value = 0;
+
+      oscillator.connect(gain);
+      gain.connect(ctx.destination);
+
+      const now = ctx.currentTime;
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(0.08, now + 0.01);
+      gain.gain.linearRampToValueAtTime(0.0, now + 0.11);
+
+      oscillator.start(now);
+      oscillator.stop(now + 0.12);
+
+      oscillator.onended = () => {
+        void ctx.close();
+      };
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const applyMicMute = useCallback((muted: boolean) => {
+    const micStream = micStreamRef.current;
+    const track = micStream?.getAudioTracks()?.[0] ?? null;
+    if (!track) {
+      return;
+    }
+    track.enabled = !muted;
   }, []);
 
   const sendSessionUpdate = useCallback(
@@ -164,7 +267,7 @@ export function App() {
                 type: "function",
                 name: "pauseConversation",
                 description:
-                  "Pause the current voice conversation (disconnect) so the user can resume later.",
+                  "Mute the microphone to save costs during long silence or when conversation seems complete. This is just a cost-saving measure - the user can resume by speaking again. Use this when there's been a long pause, silence, or the conversation appears to have reached a natural end. Don't use if the user is actively engaged or asking questions.",
                 parameters: {
                   type: "object",
                   properties: {
@@ -207,6 +310,15 @@ export function App() {
     }
     pendingAssistantTranscriptRef.current = "";
 
+    if (userSpeakingTimerRef.current) {
+      window.clearTimeout(userSpeakingTimerRef.current);
+      userSpeakingTimerRef.current = null;
+    }
+    setIsUserSpeaking(false);
+
+    setIsMuted(false);
+    setIsWaitingForSupervisor(false);
+
     const dc = dataChannelRef.current;
     if (dc) {
       try {
@@ -237,35 +349,47 @@ export function App() {
   }, []);
 
   const disconnectForTimeout = useCallback(() => {
-    addLog("Disconnect requested (timeout)");
-
+    addLog("Auto-mute triggered (timeout)");
     clearSessionTimeoutTimers();
 
-    cleanupConnection();
-
-    setConnectionState("disconnected");
-    setConnectError(null);
-    setLiveUserTranscript("");
-    setLiveAssistantTranscript("");
-    sessionIdRef.current = null;
-  }, [addLog, cleanupConnection, clearSessionTimeoutTimers]);
+    setIsMuted(true);
+    applyMicMute(true);
+  }, [addLog, applyMicMute, clearSessionTimeoutTimers]);
 
   const pauseConversation = useCallback(
     (reason?: string) => {
       const suffix = reason ? `: ${reason}` : "";
       addLog(`Pause requested${suffix}`);
 
-      clearSessionTimeoutTimers();
-      cleanupConnection();
+      if (pendingAssistantCommitTimerRef.current) {
+        window.clearTimeout(pendingAssistantCommitTimerRef.current);
+        pendingAssistantCommitTimerRef.current = null;
+      }
 
-      setConnectionState("disconnected");
-      setConnectError(null);
-      setLiveUserTranscript("");
-      setLiveAssistantTranscript("");
-      sessionIdRef.current = null;
+      const pendingText = pendingAssistantTranscriptRef.current.trim();
+      if (pendingText) {
+        const trimmed = normalizeTranscriptText(pendingText).trim();
+        if (trimmed) {
+          setTranscriptHistory((prev) => {
+            const next: TranscriptItem = {
+              id: `assistant-${Date.now()}`,
+              speaker: "assistant",
+              text: trimmed
+            };
+            const merged = [next, ...prev];
+            return merged.length > 50 ? merged.slice(0, 50) : merged;
+          });
+          addLog("Committed pending assistant transcript before pause");
+        }
+      }
+
+      clearSessionTimeoutTimers();
+
+      setIsMuted(true);
+      applyMicMute(true);
       setTimeoutStatus("paused");
     },
-    [addLog, cleanupConnection, clearSessionTimeoutTimers]
+    [addLog, applyMicMute, clearSessionTimeoutTimers]
   );
 
   const scheduleSessionTimeout = useCallback(() => {
@@ -277,26 +401,10 @@ export function App() {
     }, SESSION_TIMEOUT_WARNING_MS);
 
     sessionTimeoutTimerRef.current = window.setTimeout(() => {
-      setTimeoutStatus("expired");
+      setTimeoutStatus("none");
       disconnectForTimeout();
     }, SESSION_TIMEOUT_MS);
   }, [addLog, clearSessionTimeoutTimers, disconnectForTimeout]);
-
-  const disconnect = useCallback(() => {
-    addLog("Disconnect requested");
-
-    clearSessionTimeoutTimers();
-    setTimeoutStatus("none");
-
-    cleanupConnection();
-
-    setConnectionState("disconnected");
-    setTimeoutStatus("paused");
-    setConnectError(null);
-    setLiveUserTranscript("");
-    setLiveAssistantTranscript("");
-    sessionIdRef.current = null;
-  }, [addLog, cleanupConnection, clearSessionTimeoutTimers]);
 
   useEffect(() => {
     return () => {
@@ -348,6 +456,7 @@ export function App() {
 
   const runSupervisorTool = useCallback(
     async (callId: string, relevantContextFromLastUserMessage: string) => {
+      setIsWaitingForSupervisor(true);
       addLog("Supervisor tool invoked");
 
       const sessionId = sessionIdRef.current;
@@ -410,6 +519,8 @@ export function App() {
         });
 
         sendResponseCreate();
+      } finally {
+        setIsWaitingForSupervisor(false);
       }
     },
     [addLog, sendConversationItemCreate, sendResponseCreate]
@@ -424,11 +535,22 @@ export function App() {
       const record = evt as Record<string, unknown>;
       const type = typeof record.type === "string" ? record.type : "";
 
+      if (type === "input_audio_buffer.speech_started") {
+        if (userSpeakingTimerRef.current) {
+          window.clearTimeout(userSpeakingTimerRef.current);
+          userSpeakingTimerRef.current = null;
+        }
+        setIsUserSpeaking(true);
+        return;
+      }
+
       if (type === "conversation.item.input_audio_transcription.delta") {
         const delta = typeof record.delta === "string" ? record.delta : "";
         if (delta) {
           setLiveUserTranscript((prev) => `${prev}${delta}`);
         }
+        setIsUserSpeaking(true);
+        scheduleUserSpeakingOff();
         return;
       }
 
@@ -436,19 +558,22 @@ export function App() {
         const transcript =
           typeof record.transcript === "string" ? record.transcript : liveUserTranscript;
         setLiveUserTranscript("");
+        scheduleUserSpeakingOff();
         pushTranscript("user", transcript);
 
         if (looksLikeGoodbye(transcript)) {
           pauseConversation("user_goodbye");
+          return;
         }
+
         return;
       }
 
       if (type === "response.audio_transcript.delta") {
         const delta = typeof record.delta === "string" ? record.delta : "";
         if (delta) {
-          setLiveAssistantTranscript((prev) => `${prev}${delta}`);
           pendingAssistantTranscriptRef.current = `${pendingAssistantTranscriptRef.current}${delta}`;
+          setLiveAssistantTranscript(pendingAssistantTranscriptRef.current);
         }
         return;
       }
@@ -457,6 +582,7 @@ export function App() {
         const transcript = typeof record.transcript === "string" ? record.transcript : "";
         if (transcript) {
           pendingAssistantTranscriptRef.current = transcript;
+          setLiveAssistantTranscript(transcript);
         }
 
         if (pendingAssistantCommitTimerRef.current) {
@@ -515,7 +641,13 @@ export function App() {
       }
 
       if (type === "error") {
-        addLog("Realtime error event received");
+        const errorObj = isRecord(record.error) ? record.error : null;
+        const errorType = errorObj && typeof errorObj.type === "string" ? errorObj.type : "unknown";
+        const errorCode = errorObj && typeof errorObj.code === "string" ? errorObj.code : "";
+        const errorMessage =
+          errorObj && typeof errorObj.message === "string" ? errorObj.message : "";
+        const errorDetails = [errorType, errorCode, errorMessage].filter(Boolean).join(" - ");
+        addLog(`Realtime error: ${errorDetails || JSON.stringify(record)}`);
       }
 
       if (type === "response.done") {
@@ -647,11 +779,11 @@ export function App() {
         audio.srcObject = stream;
       };
 
-      const micStream = await navigator.mediaDevices.getUserMedia({
-        audio: true
-      });
+      const micStream = await getMicrophoneStream();
       micStreamRef.current = micStream;
       pc.addTrack(micStream.getTracks()[0]!, micStream);
+
+      setIsMuted(false);
 
       const dc = pc.createDataChannel("oai-events");
       dataChannelRef.current = dc;
@@ -727,17 +859,31 @@ export function App() {
   ]);
 
   const handleMicToggle = useCallback(() => {
-    if (connectionState === "connected" || connectionState === "connecting") {
-      disconnect();
+    if (connectionState === "connecting") {
+      return;
+    }
+
+    if (connectionState === "connected") {
+      const nextMuted = !isMuted;
+      setIsMuted(nextMuted);
+      applyMicMute(nextMuted);
+      if (nextMuted) {
+        playMutedBeep();
+      }
       return;
     }
 
     setTimeoutStatus("none");
     void connect();
-  }, [connect, connectionState, disconnect]);
+  }, [applyMicMute, connect, connectionState, isMuted, playMutedBeep]);
 
   useEffect(() => {
     if (connectionState !== "connected") {
+      clearSessionTimeoutTimers();
+      return;
+    }
+
+    if (isWaitingForSupervisor) {
       clearSessionTimeoutTimers();
       return;
     }
@@ -748,6 +894,7 @@ export function App() {
     clampSpeed,
     clearSessionTimeoutTimers,
     connectionState,
+    isWaitingForSupervisor,
     model,
     scheduleSessionTimeout,
     sendSessionUpdate,
@@ -812,6 +959,27 @@ export function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.code === "Space" &&
+        !(
+          event.target instanceof HTMLInputElement ||
+          event.target instanceof HTMLSelectElement ||
+          event.target instanceof HTMLTextAreaElement
+        )
+      ) {
+        event.preventDefault();
+        handleMicToggle();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [handleMicToggle]);
+
   return (
     <div className="container">
       <div className="mainLayout">
@@ -822,17 +990,19 @@ export function App() {
         <div className="hero">
           <button
             type="button"
-            className={`micButton state-${connectionState}`}
+            className={`micButton state-${connectionState}${isMuted ? " isMuted" : ""}${isUserSpeaking && !isMuted && connectionState === "connected" ? " isSpeaking" : ""}`}
             onClick={handleMicToggle}
             disabled={!health?.hasOpenAIKey}
             aria-label={
-              connectionState === "connected" || connectionState === "connecting"
-                ? "Stop listening"
-                : "Start listening"
+              connectionState === "connected"
+                ? isMuted
+                  ? "Unmute microphone"
+                  : "Mute microphone"
+                : connectionState === "connecting"
+                  ? "Starting"
+                  : "Start listening"
             }
-            title={
-              connectionState === "connected" || connectionState === "connecting" ? "Stop" : "Start"
-            }
+            title={connectionState === "connected" ? (isMuted ? "Unmute" : "Mute") : "Start"}
           >
             <svg
               className="micIcon"
@@ -870,6 +1040,18 @@ export function App() {
                 strokeLinejoin="round"
               />
             </svg>
+
+            {connectionState === "connected" && isMuted ? (
+              <svg
+                className="micSlash"
+                viewBox="0 0 24 24"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+                aria-hidden="true"
+              >
+                <path d="M6 6l12 12" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+              </svg>
+            ) : null}
           </button>
 
           <div className="micHint">
@@ -887,8 +1069,26 @@ export function App() {
               <span>Paused. Click to resume.</span>
             ) : timeoutStatus === "warning" ? (
               <span>Still there? Click to keep listening.</span>
+            ) : connectionState === "connected" && isMuted ? (
+              <span className="micHintLine">
+                <span>Muted (spacebar to unmute)…</span>
+                {isWaitingForSupervisor ? (
+                  <span className="waitingLine">
+                    <span className="spinner" aria-hidden="true" />
+                    <span>Waiting for response…</span>
+                  </span>
+                ) : null}
+              </span>
             ) : connectionState === "connected" ? (
-              <span>Listening… (click to stop)</span>
+              <span className="micHintLine">
+                <span>Listening (spacebar to mute)…</span>
+                {isWaitingForSupervisor ? (
+                  <span className="waitingLine">
+                    <span className="spinner" aria-hidden="true" />
+                    <span>Waiting for response…</span>
+                  </span>
+                ) : null}
+              </span>
             ) : connectionState === "connecting" ? (
               <span>Starting…</span>
             ) : connectionState === "error" ? (
@@ -939,23 +1139,25 @@ export function App() {
           <div className="speedPicker">
             <label className="field">
               <span>Speed</span>
-              <input
-                type="range"
-                min={0.25}
-                max={1.5}
-                step={0.05}
-                value={speechSpeed}
-                onChange={(e) => {
-                  const next = Number(e.target.value);
-                  setSpeechSpeed(next);
-                  if (connectionState === "connected") {
-                    sendSessionUpdate({ speed: clampSpeed(next) });
-                  }
-                }}
-                disabled={connectionState === "connecting"}
-                aria-label={`Speech speed ${clampSpeed(speechSpeed).toFixed(2)}x`}
-              />
-              <span className="speedValue">{clampSpeed(speechSpeed).toFixed(2)}x</span>
+              <div className="rangeContainer">
+                <input
+                  type="range"
+                  min={0.25}
+                  max={1.5}
+                  step={0.05}
+                  value={speechSpeed}
+                  onChange={(e) => {
+                    const next = Number(e.target.value);
+                    setSpeechSpeed(next);
+                    if (connectionState === "connected") {
+                      sendSessionUpdate({ speed: clampSpeed(next) });
+                    }
+                  }}
+                  disabled={connectionState === "connecting"}
+                  aria-label={`Speech speed ${clampSpeed(speechSpeed).toFixed(2)}x`}
+                />
+                <span className="speedValue">{clampSpeed(speechSpeed).toFixed(2)}x</span>
+              </div>
             </label>
           </div>
 
@@ -964,23 +1166,20 @@ export function App() {
 
         <div className="card">
           <h2>Transcript</h2>
-          <div className="transcripts">
-            <div className="transcriptLine">
-              <strong>You (live):</strong>{" "}
-              {normalizeTranscriptText(liveUserTranscript) || "(listening...)"}
-            </div>
-            <div className="transcriptLine">
-              <strong>Assistant (live):</strong>{" "}
-              <span className="liveMarkdown">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {normalizeTranscriptText(liveAssistantTranscript) || "(speaking...)"}
-                </ReactMarkdown>
-              </span>
-            </div>
-          </div>
-
           <div className="history">
-            {transcriptHistory.length === 0 ? <p>(no transcript yet)</p> : null}
+            {liveAssistantTranscript && (
+              <div className="bubble assistant live">
+                <div className="bubbleHeader">Assistant</div>
+                <div className="bubbleText">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {normalizeTranscriptText(liveAssistantTranscript)}
+                  </ReactMarkdown>
+                </div>
+              </div>
+            )}
+            {transcriptHistory.length === 0 && !liveAssistantTranscript ? (
+              <p>(no transcript yet)</p>
+            ) : null}
             {transcriptHistory.map((item) => (
               <div key={item.id} className={`bubble ${item.speaker}`}>
                 <div className="bubbleHeader">{item.speaker === "user" ? "You" : "Assistant"}</div>

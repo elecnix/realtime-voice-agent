@@ -13,6 +13,8 @@ export default tseslint.config(
       "**/build/**",
       "**/coverage/**",
       "**/node_modules/**",
+      "eslint.config.js",
+      "server/test-feedback.js",
       "research/**",
       "scripts/**"
     ]

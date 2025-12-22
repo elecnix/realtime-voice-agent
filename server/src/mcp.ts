@@ -21,11 +21,14 @@ type McpConfig = {
   mcp?: {
     servers?: Record<
       string,
-      {
-        command: string;
-        args?: string[];
-        env?: Record<string, string>;
-      }
+      | {
+          command: string;
+          args?: string[];
+          env?: Record<string, string>;
+        }
+      | {
+          url: string;
+        }
     >;
   };
 };
@@ -59,12 +62,19 @@ export type OpenAiChatTool = {
   };
 };
 
-type McpServerSpec = {
-  name: string;
-  command: string;
-  args: string[];
-  env: Record<string, string>;
-};
+type McpServerSpec =
+  | {
+      type: "stdio";
+      name: string;
+      command: string;
+      args: string[];
+      env: Record<string, string>;
+    }
+  | {
+      type: "remote";
+      name: string;
+      url: string;
+    };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
   return typeof value === "object" && value !== null;
@@ -72,6 +82,24 @@ const isRecord = (value: unknown): value is Record<string, unknown> => {
 
 const isStringArray = (value: unknown): value is string[] => {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
+};
+
+type StdioServerConfig = {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+};
+
+type RemoteServerConfig = {
+  url: string;
+};
+
+const isRemoteServerConfig = (config: unknown): config is RemoteServerConfig => {
+  return isRecord(config) && typeof config.url === "string";
+};
+
+const isStdioServerConfig = (config: unknown): config is StdioServerConfig => {
+  return isRecord(config) && typeof config.command === "string";
 };
 
 const parseYaml: (raw: string) => unknown = yamlParse as unknown as (raw: string) => unknown;
@@ -178,7 +206,7 @@ class McpStdioClient {
   private stderrTail = "";
   private allowRestart = true;
 
-  constructor(private spec: McpServerSpec) {}
+  constructor(private spec: Extract<McpServerSpec, { type: "stdio" }>) {}
 
   async connect(): Promise<void> {
     if (this.child) {
@@ -362,7 +390,7 @@ class McpStdioClient {
         const tail = this.stderrTail.trim();
         const tailText = tail ? ` (stderr: ${tail})` : "";
         pending.reject(new Error(`MCP timeout calling ${method}${tailText}`));
-      }, 15_000);
+      }, 300_000);
 
       const settle = {
         resolve: (value: unknown) => {
@@ -412,6 +440,161 @@ class McpStdioClient {
   }
 }
 
+class McpRemoteClient {
+  private connected = false;
+  private nextId = 1;
+
+  constructor(private spec: Extract<McpServerSpec, { type: "remote" }>) {}
+
+  async connect(): Promise<void> {
+    if (this.connected) {
+      return;
+    }
+
+    try {
+      await this.initialize();
+      this.connected = true;
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown error";
+      throw new Error(`Failed to initialize remote MCP server ${this.spec.name}: ${message}`);
+    }
+  }
+
+  close(): Promise<void> {
+    this.connected = false;
+    return Promise.resolve();
+  }
+
+  private async initialize(): Promise<void> {
+    await this.request("initialize", {
+      protocolVersion: "2024-11-05",
+      capabilities: {
+        tools: {}
+      },
+      clientInfo: {
+        name: "realtime-voice-agent",
+        version: "0.0.0"
+      }
+    });
+
+    await this.notify("notifications/initialized", {});
+  }
+
+  async listTools(): Promise<McpToolDefinition[]> {
+    const result = await this.request("tools/list", {});
+    if (!isRecord(result)) {
+      return [];
+    }
+
+    const toolsRaw = result.tools;
+    if (!Array.isArray(toolsRaw)) {
+      return [];
+    }
+
+    return toolsRaw.filter(isRecord) as McpToolDefinition[];
+  }
+
+  async callTool(toolName: string, args: Record<string, unknown>): Promise<CallToolResult> {
+    const result = await this.request("tools/call", {
+      name: toolName,
+      arguments: args
+    });
+
+    return isRecord(result) ? (result as CallToolResult) : { content: result };
+  }
+
+  private async request(method: string, params: Record<string, unknown>): Promise<unknown> {
+    if (!this.connected && method !== "initialize") {
+      throw new Error("Remote MCP not connected");
+    }
+
+    const id = this.nextId++;
+    const payload: JsonRpcRequest = {
+      jsonrpc: "2.0",
+      id,
+      method,
+      params
+    };
+
+    const response = await fetch(this.spec.url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream"
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      throw new Error(`Remote MCP request failed: ${response.status} ${response.statusText}`);
+    }
+
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType.includes("text/event-stream")) {
+      const text = await response.text();
+      const lines = text.split("\n");
+
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          const jsonData = line.slice(6);
+          try {
+            const data: unknown = JSON.parse(jsonData);
+            if (!isRecord(data)) {
+              continue;
+            }
+
+            const rpcResponse = data as JsonRpcResponse;
+            if (rpcResponse.id === id) {
+              if (rpcResponse.error) {
+                throw new Error(`MCP error: ${JSON.stringify(rpcResponse.error).slice(0, 2000)}`);
+              }
+              return rpcResponse.result;
+            }
+          } catch (e) {
+            if (e instanceof Error && e.message.startsWith("MCP error")) {
+              throw e;
+            }
+          }
+        }
+      }
+      throw new Error("No matching response in SSE stream");
+    }
+
+    const data: unknown = await response.json();
+    if (!isRecord(data)) {
+      throw new Error("Invalid response from remote MCP server");
+    }
+
+    const rpcResponse = data as JsonRpcResponse;
+    if (rpcResponse.error) {
+      throw new Error(`MCP error: ${JSON.stringify(rpcResponse.error).slice(0, 2000)}`);
+    }
+
+    return rpcResponse.result;
+  }
+
+  private async notify(method: string, params: Record<string, unknown>): Promise<void> {
+    const payload = {
+      jsonrpc: "2.0",
+      method,
+      params
+    };
+
+    const response = await fetch(this.spec.url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream"
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      throw new Error(`Remote MCP notification failed: ${response.status} ${response.statusText}`);
+    }
+  }
+}
+
 export type ToolPolicy = {
   requiresConfirmation: boolean;
   kind: "fetch" | "shell";
@@ -431,8 +614,10 @@ export type PendingToolCall = {
   policy: ToolPolicy;
 };
 
+type McpClient = McpStdioClient | McpRemoteClient;
+
 export class McpManager {
-  private clients = new Map<string, McpStdioClient>();
+  private clients = new Map<string, McpClient>();
   private toolIndex = new Map<
     string,
     {
@@ -458,7 +643,7 @@ export class McpManager {
     this.startupErrors = [];
 
     for (const spec of servers) {
-      const client = new McpStdioClient(spec);
+      const client = spec.type === "stdio" ? new McpStdioClient(spec) : new McpRemoteClient(spec);
       try {
         await client.connect();
         this.clients.set(spec.name, client);
@@ -615,34 +800,37 @@ export class McpManager {
     const servers: McpServerSpec[] = [];
 
     for (const [name, specRaw] of Object.entries(serversRaw)) {
-      if (!isRecord(specRaw)) {
+      if (isRemoteServerConfig(specRaw)) {
+        servers.push({
+          type: "remote",
+          name,
+          url: specRaw.url
+        });
         continue;
       }
 
-      const command = typeof specRaw.command === "string" ? specRaw.command : null;
-      if (!command) {
-        continue;
+      if (isStdioServerConfig(specRaw)) {
+        const args = isStringArray(specRaw.args) ? specRaw.args : [];
+        const env = isRecord(specRaw.env)
+          ? Object.fromEntries(
+              Object.entries(specRaw.env).flatMap(([k, v]) => {
+                if (typeof v !== "string") {
+                  return [];
+                }
+                const expanded = expandEnvPlaceholders(v);
+                return expanded ? [[k, expanded]] : [];
+              })
+            )
+          : {};
+
+        servers.push({
+          type: "stdio",
+          name,
+          command: specRaw.command,
+          args,
+          env
+        });
       }
-
-      const args = isStringArray(specRaw.args) ? specRaw.args : [];
-      const env = isRecord(specRaw.env)
-        ? Object.fromEntries(
-            Object.entries(specRaw.env).flatMap(([k, v]) => {
-              if (typeof v !== "string") {
-                return [];
-              }
-              const expanded = expandEnvPlaceholders(v);
-              return expanded ? [[k, expanded]] : [];
-            })
-          )
-        : {};
-
-      servers.push({
-        name,
-        command,
-        args,
-        env
-      });
     }
 
     return servers;

@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { env } from "./env.js";
 import { createMcpManager, type McpManager, type ToolPolicy } from "./mcp.js";
+import { recordFeedback, createFeedbackTool } from "./feedback.js";
 
 type TranscriptItem = {
   speaker: "user" | "assistant";
@@ -70,7 +71,13 @@ const clampSpeed = (value: number): number => {
 const supervisorSystemPrompt =
   "You are a senior supervisor for a junior realtime voice agent. " +
   "Given the conversation transcript so far, produce the next assistant message. " +
-  "Be concise and voice-friendly. Ask one clarifying question if needed.";
+  "Be concise and voice-friendly. Ask one clarifying question only if necessary. " +
+  "Try to infer the user's intent and respond accordingly. " +
+  "You have access to a record_user_feedback tool that you can use when: " +
+  "1. The user explicitly provides feedback about their experience " +
+  "2. You detect user frustration, confusion, or satisfaction from their tone or responses " +
+  "3. Something goes particularly well or poorly in the conversation " +
+  "Use the feedback tool to capture these insights for product improvement.";
 
 const formatTranscriptForSupervisor = (items: TranscriptItem[]): string => {
   return items
@@ -201,7 +208,15 @@ const buildServer = async () => {
         model,
         ...(voice ? { voice } : {}),
         ...(typeof speed === "number" ? { speed } : {}),
-        ...(instructions ? { instructions } : {})
+        ...(instructions ? { instructions } : {}),
+        turn_detection: {
+          type: "server_vad",
+          silence_duration_ms: 1500, // Wait 1.5 seconds before considering user done
+          prefix_padding_ms: 300, // Include 300ms of silence before speech
+          threshold: 0.6, // Slightly higher threshold to avoid false positives
+          create_response: true,
+          interrupt_response: true
+        }
       })
     });
 
@@ -392,7 +407,9 @@ const buildServer = async () => {
       "Return ONLY the next assistant message (no headers)."
     ].filter((part): part is string => typeof part === "string" && part.length > 0);
 
-    const tools = mcpManager ? mcpManager.getOpenAiTools() : [];
+    const tools = mcpManager
+      ? [...mcpManager.getOpenAiTools(), createFeedbackTool]
+      : [createFeedbackTool];
     const maxIterations = 3;
 
     const baseMessages: OpenAiChatMessage[] = [
@@ -511,6 +528,80 @@ const buildServer = async () => {
         }
       } catch {
         // ignore
+      }
+
+      if (toolName === "record_user_feedback") {
+        // Handle internal feedback tool
+        try {
+          const feedbackReport: {
+            type: "explicit" | "inferred";
+            sentiment?: "positive" | "negative" | "neutral";
+            reason?: string;
+            assistantObservation?: string;
+          } = {
+            type: args.feedbackType as "explicit" | "inferred"
+          };
+
+          if (typeof args.sentiment === "string") {
+            feedbackReport.sentiment = args.sentiment as "positive" | "negative" | "neutral";
+          }
+          if (typeof args.reason === "string") {
+            feedbackReport.reason = args.reason;
+          }
+          if (typeof args.assistantObservation === "string") {
+            feedbackReport.assistantObservation = args.assistantObservation;
+          }
+
+          await recordFeedback(
+            (args.conversationHistory as Array<{ speaker: "user" | "assistant"; text: string }>) ||
+              transcript,
+            feedbackReport
+          );
+
+          messages.push({
+            role: "assistant",
+            content: assistantContent ?? "",
+            tool_calls: [
+              {
+                id: toolCallId,
+                type: "function",
+                function: {
+                  name: toolName,
+                  arguments: argsRaw
+                }
+              }
+            ]
+          });
+          messages.push({
+            role: "tool",
+            tool_call_id: toolCallId,
+            content: "Feedback recorded successfully"
+          });
+        } catch (e) {
+          const message = e instanceof Error ? e.message : "Unknown error";
+          req.log.warn({ message }, "Feedback recording failed");
+
+          messages.push({
+            role: "assistant",
+            content: assistantContent ?? "",
+            tool_calls: [
+              {
+                id: toolCallId,
+                type: "function",
+                function: {
+                  name: toolName,
+                  arguments: argsRaw
+                }
+              }
+            ]
+          });
+          messages.push({
+            role: "tool",
+            tool_call_id: toolCallId,
+            content: `Failed to record feedback: ${message}`
+          });
+        }
+        continue;
       }
 
       const policy = mcpManager.getToolPolicy(toolName);
