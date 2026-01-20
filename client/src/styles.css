@@ -180,6 +180,29 @@ h1 {
   max-width: 520px;
 }
 
+.costBadge {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  font-variant-numeric: tabular-nums;
+  margin-top: 8px;
+}
+
+.costLabel {
+  color: rgba(232, 236, 248, 0.7);
+  font-size: 14px;
+}
+
+.costValue {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
 .micHintLine {
   display: inline-flex;
   align-items: center;

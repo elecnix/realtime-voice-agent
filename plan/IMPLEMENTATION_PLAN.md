@@ -36,6 +36,7 @@ Goal: prove the core realtime voice pipe works end-to-end before adding orchestr
 - Implement WebRTC session connect using an OpenAI supported approach (SDK or direct API).
 - Fetch ephemeral key from server.
 - Connect/disconnect UI.
+- Add a client-side session timeout: after 60 seconds, disconnect automatically; shortly before disconnect, show a prompt to click a Resume button to continue.
 - Hook transcript and event callbacks for UI.
 
 Deliverables:
@@ -64,6 +65,12 @@ Decision: use the working pattern from `openai-realtime-agents` where the realti
   - Calls a supervisor text model (for example `gpt-4.1`).
   - Provides the supervisor with available tools (MCP-derived tool schemas once milestone 4 is complete; until then, run in “no-tools” mode).
   - Returns a short response suitable for voice.
+
+Nice to have:
+
+- Add a tool that can pause the conversation before the timeout.
+- If user says good bye, pause.
+- The voice agent should have direct access to that tool, without going through the supervisor.
 
 ### 3.3 Tool-call iteration loop
 
@@ -125,12 +132,12 @@ Deliverables:
 
 ## 5. Hardening and operational readiness
 
+- Display running cost of conversation in UI.
 - Enforce limits:
   - request size
   - timeouts
 - Ensure no secrets are logged.
 - CORS restrict to the hosted origin.
-- Document Cloudflare tunnel configuration expectations.
 
 Deliverables:
 
@@ -152,3 +159,10 @@ Manual smoke tests:
 - Trigger supervisor escalation.
 - Trigger fetch tool.
 - Trigger shell tool and confirm via voice.
+
+---
+
+https://platform.openai.com/docs/guides/tools-local-shell
+https://github.com/codelion/dynamic-shell-server
+https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem
+https://github.com/ezyang/codemcp

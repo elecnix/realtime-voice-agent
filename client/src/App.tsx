@@ -128,6 +128,7 @@ export function App() {
   const [liveAssistantTranscript, setLiveAssistantTranscript] = useState<string>("");
   const [transcriptHistory, setTranscriptHistory] = useState<TranscriptItem[]>([]);
   const [logs, setLogs] = useState<LogItem[]>([]);
+  const [totalCostUsd, setTotalCostUsd] = useState<number>(0);
 
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [isWaitingForSupervisor, setIsWaitingForSupervisor] = useState<boolean>(false);
@@ -224,6 +225,91 @@ export function App() {
     }
     track.enabled = !muted;
   }, []);
+
+  const isDev = import.meta.env.DEV;
+
+  const extractCostFromUsage = useCallback(
+    (usage: unknown): {
+      costUsd: number;
+      inputTextTokens: number;
+      inputAudioTokens: number;
+      outputTextTokens: number;
+      outputAudioTokens: number;
+    } => {
+      if (!isRecord(usage)) {
+        return {
+          costUsd: 0,
+          inputTextTokens: 0,
+          inputAudioTokens: 0,
+          outputTextTokens: 0,
+          outputAudioTokens: 0
+        };
+      }
+
+      const inputTokenDetails = isRecord(usage.input_token_details)
+        ? usage.input_token_details
+        : null;
+      const outputTokenDetails = isRecord(usage.output_token_details)
+        ? usage.output_token_details
+        : null;
+
+      const inputTextTokens =
+        inputTokenDetails && typeof inputTokenDetails.text_tokens === "number"
+          ? inputTokenDetails.text_tokens
+          : 0;
+      const inputAudioTokens =
+        inputTokenDetails && typeof inputTokenDetails.audio_tokens === "number"
+          ? inputTokenDetails.audio_tokens
+          : 0;
+
+      const outputTextTokens =
+        outputTokenDetails && typeof outputTokenDetails.text_tokens === "number"
+          ? outputTokenDetails.text_tokens
+          : 0;
+      const outputAudioTokens =
+        outputTokenDetails && typeof outputTokenDetails.audio_tokens === "number"
+          ? outputTokenDetails.audio_tokens
+          : 0;
+
+      const hasInputDetails = inputTextTokens > 0 || inputAudioTokens > 0;
+      const hasOutputDetails = outputTextTokens > 0 || outputAudioTokens > 0;
+
+      const normalizedInputTextTokens = hasInputDetails
+        ? inputTextTokens
+        : typeof usage.input_tokens === "number"
+          ? usage.input_tokens
+          : 0;
+      const normalizedInputAudioTokens = hasInputDetails ? inputAudioTokens : 0;
+
+      const normalizedOutputTextTokens = hasOutputDetails
+        ? outputTextTokens
+        : typeof usage.output_tokens === "number"
+          ? usage.output_tokens
+          : 0;
+      const normalizedOutputAudioTokens = hasOutputDetails ? outputAudioTokens : 0;
+
+      const inputTextUsdPer1M = 5;
+      const outputTextUsdPer1M = 20;
+      const inputAudioUsdPer1M = 100;
+      const outputAudioUsdPer1M = 200;
+
+      const costUsd =
+        (normalizedInputTextTokens * inputTextUsdPer1M +
+          normalizedOutputTextTokens * outputTextUsdPer1M +
+          normalizedInputAudioTokens * inputAudioUsdPer1M +
+          normalizedOutputAudioTokens * outputAudioUsdPer1M) /
+        1_000_000;
+
+      return {
+        costUsd,
+        inputTextTokens: normalizedInputTextTokens,
+        inputAudioTokens: normalizedInputAudioTokens,
+        outputTextTokens: normalizedOutputTextTokens,
+        outputAudioTokens: normalizedOutputAudioTokens
+      };
+    },
+    []
+  );
 
   const sendSessionUpdate = useCallback(
     (updates: { voice?: string; speed?: number; model?: string }) => {
@@ -652,6 +738,21 @@ export function App() {
 
       if (type === "response.done") {
         const responseObj = isRecord(record.response) ? record.response : null;
+        const usageRaw = responseObj ? responseObj.usage : null;
+        const usage = extractCostFromUsage(usageRaw);
+        if (usage.costUsd > 0) {
+          setTotalCostUsd((prev) => prev + usage.costUsd);
+          addLog(
+            `Usage in ${usage.inputTextTokens}t/${usage.inputAudioTokens}a out ${usage.outputTextTokens}t/${usage.outputAudioTokens}a (+$${usage.costUsd.toFixed(6)})`
+          );
+        } else if (isDev) {
+          addLog("Usage missing or zero on response.done");
+        }
+
+        if (isDev) {
+          console.debug("Realtime response.done usage", usageRaw);
+          console.debug("Realtime usage derived", usage);
+        }
         const outputUnknown = responseObj ? responseObj.output : null;
         const outputArr = Array.isArray(outputUnknown) ? outputUnknown : [];
 
@@ -714,6 +815,7 @@ export function App() {
     },
     [
       addLog,
+      extractCostFromUsage,
       liveUserTranscript,
       pauseConversation,
       pushTranscript,
@@ -727,6 +829,7 @@ export function App() {
       return;
     }
 
+    setTotalCostUsd(0);
     setConnectError(null);
     setConnectionState("connecting");
     addLog("Connecting...");
@@ -1111,6 +1214,11 @@ export function App() {
                 <span>Click to start listening.</span>
               </span>
             )}
+          </div>
+
+          <div className="costBadge" aria-label={`Total cost ${totalCostUsd.toFixed(6)} dollars`}>
+            <span className="costLabel">Cost</span>
+            <span className="costValue">${totalCostUsd.toFixed(6)}</span>
           </div>
 
           <div className="modelPicker">

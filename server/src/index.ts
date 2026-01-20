@@ -193,7 +193,7 @@ const buildServer = async () => {
       });
     }
 
-    const model = req.body.model ?? "gpt-realtime-mini-2025-10-06";
+    const model = req.body.model ?? "gpt-4o-mini-realtime-preview-latest";
     const voice = req.body.voice ?? null;
     const instructions = req.body.instructions ?? null;
     const speed = typeof req.body.speed === "number" ? clampSpeed(req.body.speed) : null;

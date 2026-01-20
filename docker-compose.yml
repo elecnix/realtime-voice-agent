@@ -1,0 +1,41 @@
+version: "3.9"
+
+services:
+  server:
+    image: node:20-bookworm-slim
+    working_dir: /app
+    command: >-
+      sh -c "npm install --no-fund --no-audit && npm run dev -w @realtime-voice-agent/server"
+    environment:
+      SERVER_PORT: "8643"
+      CLIENT_PORT: "8642"
+      NODE_ENV: development
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+    ports:
+      - "8643:8643"
+
+  client:
+    image: node:20-bookworm-slim
+    working_dir: /app
+    command: >-
+      sh -c "npm install --no-fund --no-audit && npm run dev -w @realtime-voice-agent/client"
+    environment:
+      SERVER_PORT: "8643"
+      CLIENT_PORT: "8642"
+      NODE_ENV: development
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+    ports:
+      - "8642:8642"
+    depends_on:
+      - server
+
+volumes:
+  node_modules:

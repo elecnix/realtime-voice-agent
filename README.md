@@ -21,3 +21,11 @@ Research material is stored in `research/`.
 ## Next steps
 
 - Implement the application based on `plan/IMPLEMENTATION_PLAN.md`
+
+## Docker Compose
+
+Start the client and server with Docker:
+
+1. Ensure `.env` exists (see `.env.example`).
+2. Run `docker compose up --detach`.
+3. Visit http://localhost:8642/ in the browser.
