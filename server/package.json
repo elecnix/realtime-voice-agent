@@ -12,7 +12,7 @@
     "@fastify/cors": "^10.0.1",
     "dotenv": "^16.4.7",
     "eventsource": "^4.1.0",
-    "fastify": "^5.2.1",
+    "fastify": "^5.12.5",
     "yaml": "^2.8.2"
   },
   "devDependencies": {
